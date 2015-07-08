@@ -12,6 +12,7 @@ import sys
 import email.utils
 import time
 import timeit
+from multiprocessing import Process, Queue, current_process
 
 import socket
 
@@ -20,6 +21,7 @@ import socket
 DOWN_DIR="download/"
 ANAC_FILE=DOWN_DIR+"datasetANAC.json"
 INFO_FILE=DOWN_DIR+"downloadInfo.json"
+INFO_ERROR_FILE=DOWN_DIR+"downloadErrorInfo.json" 
 
 PROPOSING_STRUCTURES_FILE=DOWN_DIR+"proposingStructures.json"
 TEMP_DIR=DOWN_DIR+"temp/"
@@ -362,7 +364,7 @@ def checkUpdates(urlANAC):
     #copies all the CF to proposingStructures.jon (for LOD linking purposes)
     proposingStructuresDict= dict()
     httpInfo=checkUrl(urlANAC)
-    if  True==True or downloadInfo["sizeServer"]<httpInfo[0] or downloadInfo["lastUpdateServer"]<httpInfo[1] or os.path.isfile(ANAC_FILE)==False or( httpInfo[0]==-1 and   httpInfo[1]==-1):
+    if  downloadInfo["sizeServer"]<httpInfo[0] or downloadInfo["lastUpdateServer"]<httpInfo[1] or os.path.isfile(ANAC_FILE)==False or( httpInfo[0]==-1 and   httpInfo[1]==-1):
         print("Updating ANAC dataset... may take 2-3 min.")
         downloadInfo["URL"]=urlANAC
         downloadInfo["sizeServer"]=httpInfo[0]
@@ -401,65 +403,63 @@ def checkUpdates(urlANAC):
         fOut = open(PROPOSING_STRUCTURES_FILE, 'w', encoding='utf-8')       
         json.dump( proposingStructures, fOut, indent=4, ensure_ascii=False)      
         fOut.close()
-   
+        fOut = open(INFO_FILE, 'w', encoding='utf-8')
+        json.dump(downloadInfo, fOut, indent=4, ensure_ascii=False, sort_keys=True)
+        fOut.close()
+
     else:
         print("Your ANAC dataset is already up to date!")
-
-        
-    #update of datasets files
     try: 
-        print("Looking for new contracts datasets...")
         nUrl=len(downloadInfo["data"])
-        for dataset in downloadInfo["data"]:
-            administrationId=""
-            nUrlProcessed+=1
-            if "CodiceFiscale" in dataset.keys():
-                administrationId= re.sub(r'[^a-zA-Z0-9]', '', dataset["CodiceFiscale"]).upper()
-            if codiceFiscaleCheck(administrationId)==False and "RagioneSociale" in dataset.keys():
-                print("ERROR, administration ", dataset["RagioneSociale"], "has invalid fiscal id")
-                administrationId=hashlib.sha1(dataset["RagioneSociale"].encode('utf-8')).hexdigest()
-                dataset["CodiceFiscale"]=administrationId
-            elif codiceFiscaleCheck(administrationId)==False:
-                administrationId="INVALID"
-                #print("ERROR, administration ", dataset["RagioneSociale"], "has invalid fiscal id nor demonimation")
-            if "URL" in dataset.keys():
-                if "files" not in dataset.keys():
-                    dataset["files"]=[]    
-                nXmlFiles+=downloadAllIndexedDatasets(dataset["URL"], administrationId, dataset["files"])
-        print ("Downloaded or updated %s xml datasets" %nXmlFiles)
-        perCent=(nUrlProcessed/nUrl)*100
-        print("Processed %s url in ANAC dataset %s %%" %(nUrlProcessed, perCent)) 
+        obtainedData = []
+        obtainedData = multiproc(downloadInfo)
+        downloadInfo["data"] = []
+        for data in obtainedData:
+            nXmlFiles += data[1]
+            downloadInfo["data"].append(data[0])
         print("Writing final downloadInfo.json. DO NOT TERMINATE NOW to avoid database corruption!")
         #write downloadInfo.json 
         fOut = open(INFO_FILE, 'w', encoding='utf-8')       
         json.dump(downloadInfo, fOut, indent=4, ensure_ascii=False, sort_keys=True)      
-        fOut.close()
+        fOut.close()    
     except KeyboardInterrupt:
         print()
         #clear any downloaded data for dataset where interrupt was called 
-        if "files" in dataset.keys():
-            dataset["files"]=[]
-        if "RagioneSociale" in dataset.keys():
-            print("KEYBOARD INTERRUPT: while checking "+dataset["RagioneSociale"])
-        else:
-            print("KEYBOARD INTERRUPT")
-        perCent=(nUrlProcessed/nUrl)*100
-        print("Processed %s url in ANAC dataset %s %%" %(nUrlProcessed, perCent)) 
-        print("Writing final downloadInfo.json")
+        print("Writing error downloadInfoError.json")
         print("DO NOT TERMINATE NOW to avoid database corruption!")
         print("please wait...")
-        fOut = open(INFO_FILE, 'w', encoding='utf-8')       
-        json.dump(downloadInfo, fOut, indent=4, ensure_ascii=False, sort_keys=True)      
+        downloadInfoError = []
+        for data in obtainedData:
+            nXmlFiles += data[1]
+            downloadInfoError.append(data[0])
+        fOut = open(INFO_ERROR_FILE, 'w', encoding='utf-8')
+        json.dump(downloadInfoError, fOut, indent=4, ensure_ascii=False, sort_keys=True)
         fOut.close()
         elapsed = (timeit.default_timer() - start_time)/60
         print ("Downloaded or updated %s xml datasets" %nXmlFiles)
         print("process terminated after %s minutes" %elapsed)
-    except:
-        print()
-        print("UNKNOWN ERROR IN checkUpdates()! writing errrorDownloadInfo.json")
-        fOut = open(DOWN_DIR+"errorDownloadInfo.json", 'w', encoding='utf-8')       
-        json.dump(downloadInfo, fOut, indent=4, ensure_ascii=False, sort_keys=True)      
-        fOut.close()
+    
+def UpdateDatasetsFiles(dataset):
+    administrationId=""
+    nXmlFiles=0
+    if "CodiceFiscale" in dataset.keys():
+        administrationId= re.sub(r'[^a-zA-Z0-9]', '', dataset["CodiceFiscale"]).upper()
+    if codiceFiscaleCheck(administrationId)==False and "RagioneSociale" in dataset.keys():
+        print("ERROR, administration ", dataset["RagioneSociale"], "has invalid fiscal id")
+        administrationId=hashlib.sha1(dataset["RagioneSociale"].encode('utf-8')).hexdigest()
+        dataset["CodiceFiscale"]=administrationId
+    elif codiceFiscaleCheck(administrationId)==False:
+        administrationId="INVALID"
+        #print("ERROR, administration ", dataset["RagioneSociale"], "has invalid fiscal id nor demonimation")
+    if "URL" in dataset.keys():
+        if "files" not in dataset.keys():
+            dataset["files"]=[]    
+        nXmlFiles+=downloadAllIndexedDatasets(dataset["URL"], administrationId, dataset["files"])
+    print("Dowloaded %s." %nXmlFiles)
+    print(socket.gethostbyname(urllib.parse.urlparse(dataset["URL"]).netloc))
+    return [dataset, nXmlFiles] 
+
+
 
 def addDataset(url, pIva, nome):
     try: 
@@ -513,8 +513,6 @@ def removeDataset(pIva):
         print("GENERAL ERROR: download downloadInformation.json is corrupted!")
         return False
     for element in downloadInfo["data"]:
-            if "CodiceFiscale" in element.keys(): 
-                if element["CodiceFiscale"]==pIva:
                     downloadInfo["data"].remove(element)
                     print ("removed")
 
@@ -523,7 +521,45 @@ def removeDataset(pIva):
     json.dump(downloadInfo, fOut, indent=4, ensure_ascii=False, sort_keys=True)      
     fOut.close()
     
-    
+def worker(input, output):
+    for func, args in iter(input.get, 'STOP'):
+        result = calculate(func, args)
+        output.put(result)
+
+"""Function needed to provide multiporcessing abilities"""
+def calculate(func, args):
+    result = func(*args)
+    return result
+
+
+def multiproc(downloadInfo):
+    NUMBER_OF_PROCESSES = 10
+    TASKS = [(UpdateDatasetsFiles, (dataset,)) for dataset in downloadInfo["data"]]
+
+    # Create queues
+    task_queue = Queue()
+    done_queue = Queue()
+
+    # Submit tasks
+    for task in TASKS:
+        task_queue.put(task)
+
+    # Start worker processes
+    for i in range(NUMBER_OF_PROCESSES):
+        Process(target=worker, args=(task_queue, done_queue)).start()
+
+    # Appending outputs of each file to a single list
+    output = []
+    for task in range(len(TASKS)):
+        output.append(done_queue.get())
+
+    #Tell child processes to stop
+    for i in range(NUMBER_OF_PROCESSES):
+        task_queue.put('STOP')
+
+
+    return output
+
     
 
 """ returns  two float values from http header:
@@ -537,20 +573,23 @@ Following date format are supported
 in case of error or if a field absent, it has value -1 """   
 def checkUrl(url):
     result=[-1, -1]
+
     try:
         socket.setdefaulttimeout(TIMEOUT)
         f=urllib.request.urlopen(url)
         length=f.getheader("Content-Length", default="")
+        print(length)
         lastUpdate=f.getheader("Last-Modified", default="")
+        print(lastUpdate)
     except (urllib.error.URLError, urllib.error.HTTPError, urllib.error.ContentTooShortError) as err:
-        #print("CheckUrl ERROR: %s unaccessible for: %s " %( url, str(err)))
+        print("CheckUrl ERROR: %s unaccessible for: %s " %( url, str(err)))
         length=""
         lastUpdate=""
     except Exception:
-        #print("CheckUrl ERROR while opening %s Unknown error!!!" %url)
+        print("CheckUrl ERROR while opening %s Unknown error!!!" %url)
         length=""
         lastUpdate=""
-        #print(str(sys.exc_info()))
+        print(str(sys.exc_info()))
         
     try:
         result[0]=int(length)
